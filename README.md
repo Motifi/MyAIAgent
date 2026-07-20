@@ -34,6 +34,8 @@
   </p>
 </div>
 
+> This fork powers **哈基米小助手** 🐈, a personal AI assistant developed by **哈基米大王印柯为（yinkewei）**.
+
 🐈 **nanobot** is an open-source, ultra-lightweight personal AI agent you can truly own. It keeps the agent core small and readable while giving you the practical pieces for real long-running work: WebUI, chat channels, tools, memory, MCP, model routing, automation, and deployment.
 
 ## Start Here

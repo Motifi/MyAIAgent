@@ -4,7 +4,7 @@ Information about the user to help personalize interactions.
 
 ## Basic Information
 
-- **Name**: (your name)
+- **Name**: 印柯为 / yinkewei
 - **Timezone**: (your timezone, e.g., UTC+8)
 - **Language**: (preferred language)
 
@@ -30,7 +30,7 @@ Information about the user to help personalize interactions.
 
 ## Work Context
 
-- **Primary Role**: (your role, e.g., developer, researcher)
+- **Primary Role**: 哈基米大王；哈基米小助手的开发者
 - **Main Projects**: (what you're working on)
 - **Tools You Use**: (IDEs, languages, frameworks)
 
