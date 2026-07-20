@@ -908,3 +908,126 @@ export async function updateTranscriptionSettings(
     token,
   );
 }
+
+// -- Multi-user auth API --------------------------------------------------
+
+export async function login(
+  username: string,
+  password: string,
+  base: string = "",
+): Promise<import("./types").LoginResponse> {
+  return requestJson<import("./types").LoginResponse>(
+    `${base}/api/auth/login`,
+    { username, password },
+    "",
+  );
+}
+
+export async function register(
+  username: string,
+  password: string,
+  displayName: string,
+  base: string = "",
+): Promise<import("./types").RegisterResponse> {
+  return requestJson<import("./types").RegisterResponse>(
+    `${base}/api/auth/register`,
+    { username, password, display_name: displayName },
+    "",
+  );
+}
+
+export async function fetchMe(
+  token: string,
+  base: string = "",
+): Promise<{ user: import("./types").UserInfo }> {
+  return request<{ user: import("./types").UserInfo }>(
+    `${base}/api/auth/me`,
+    token,
+  );
+}
+
+export async function fetchUsers(
+  token: string,
+  base: string = "",
+): Promise<import("./types").UsersListResponse> {
+  return request<import("./types").UsersListResponse>(
+    `${base}/api/auth/users`,
+    token,
+  );
+}
+
+export async function fetchPendingUsers(
+  token: string,
+  base: string = "",
+): Promise<import("./types").UsersListResponse> {
+  return request<import("./types").UsersListResponse>(
+    `${base}/api/auth/pending-users`,
+    token,
+  );
+}
+
+export async function approveUser(
+  token: string,
+  userId: string,
+  base: string = "",
+): Promise<{ status: string }> {
+  return request<{ status: string }>(
+    `${base}/api/auth/approve/${encodeURIComponent(userId)}`,
+    token,
+    { method: "POST" },
+  );
+}
+
+export async function rejectUser(
+  token: string,
+  userId: string,
+  base: string = "",
+): Promise<{ status: string }> {
+  return request<{ status: string }>(
+    `${base}/api/auth/reject/${encodeURIComponent(userId)}`,
+    token,
+    { method: "POST" },
+  );
+}
+
+export async function changeUserRole(
+  token: string,
+  userId: string,
+  role: string,
+  base: string = "",
+): Promise<{ status: string }> {
+  return requestJson<{ status: string }>(
+    `${base}/api/auth/users/${encodeURIComponent(userId)}/role`,
+    { role },
+    token,
+  );
+}
+
+async function requestJson<T>(
+  url: string,
+  body: unknown,
+  token: string,
+  init?: RequestInit,
+): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const res = await fetchWithTimeout(
+    url,
+    {
+      ...init,
+      method: init?.method || "POST",
+      headers: { ...headers, ...(init?.headers as Record<string, string> || {}) },
+      body: JSON.stringify(body),
+    },
+    API_READ_TIMEOUT_MS,
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(res.status, text || res.statusText);
+  }
+  return res.json() as Promise<T>;
+}

@@ -1177,3 +1177,31 @@ export type Outbound =
        * generic websocket protocol for other clients. */
       webui?: true;
     };
+
+// -- Multi-user auth types ------------------------------------------------
+
+export interface UserInfo {
+  id: string;
+  username: string;
+  display_name: string;
+  role: "super_admin" | "admin" | "user";
+  status: "active" | "pending" | "disabled";
+  created_at?: string;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: UserInfo;
+  expires_in: number;
+}
+
+export interface RegisterResponse {
+  user: UserInfo;
+  message: string;
+}
+
+export interface UsersListResponse {
+  users: UserInfo[];
+}
+
+export type AuthView = "login" | "register" | "pending_approval";

@@ -70,9 +70,12 @@ export async function fetchBootstrap(
   baseUrl: string = "",
   secret: string = "",
   timeoutMs?: number,
+  jwtToken?: string,
 ): Promise<BootstrapResponse> {
   const headers: Record<string, string> = {};
-  if (secret) {
+  if (jwtToken) {
+    headers["Authorization"] = `Bearer ${jwtToken}`;
+  } else if (secret) {
     headers["X-Nanobot-Auth"] = secret;
   }
   const res = await fetchWithTimeout(`${baseUrl}/webui/bootstrap`, {

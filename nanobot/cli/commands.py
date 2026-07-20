@@ -1908,6 +1908,24 @@ def _run_gateway(
             return stripped or None
         return None
 
+    # Initialize multi-user auth store
+    from nanobot.users.store import UserStore
+
+    user_store = UserStore(db_path=config.users.db_path)
+    asyncio.run(user_store.initialize(config.users))
+
+    # Run migration from single-user to multi-user if applicable
+    from nanobot.users.migration import migrate_existing_to_multi_user
+
+    _migration_summary = asyncio.run(
+        migrate_existing_to_multi_user(
+            user_store=user_store,
+            config=config.users,
+            workspace=config.workspace_path,
+            session_manager=session_manager,
+        )
+    )
+
     # Create channel manager (forwards SessionManager so the WebSocket channel
     # can serve the embedded webui's REST surface).
     channels = ChannelManager(
@@ -1926,6 +1944,7 @@ def _run_gateway(
         webui_static_dist=webui_static_dist,
         webui_runtime_surface=webui_runtime_surface,
         webui_runtime_capabilities=webui_runtime_capabilities,
+        user_store=user_store,
     )
 
     def _pick_heartbeat_target() -> tuple[str, str]:

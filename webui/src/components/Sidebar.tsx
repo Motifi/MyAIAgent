@@ -8,6 +8,7 @@ import {
   Settings,
   SquarePen,
   Blocks,
+  Users,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -39,6 +40,8 @@ interface SidebarProps {
   onOpenSkills: () => void;
   onOpenAutomations: () => void;
   onOpenSearch: () => void;
+  onOpenUsers?: () => void;
+  isAdmin?: boolean;
   activeUtility?: "apps" | "skills" | "automations" | null;
   onToggleArchived: () => void;
   onCollapse: () => void;
@@ -230,6 +233,15 @@ export function Sidebar(props: SidebarProps) {
           collapsed && "w-14 flex-col px-0",
         )}
       >
+        {props.isAdmin && props.onOpenUsers && (
+          <SidebarActionButton
+            collapsed={collapsed}
+            label="Users"
+            onClick={props.onOpenUsers}
+            className={collapsed ? undefined : "flex-1"}
+            icon={<Users className="h-4 w-4" />}
+          />
+        )}
         <SidebarActionButton
           collapsed={collapsed}
           label={t("sidebar.settings")}

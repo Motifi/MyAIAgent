@@ -671,6 +671,7 @@ class AgentLoop:
     ) -> list[dict[str, Any]]:
         """Build the initial message list for the LLM turn."""
         scope = self.workspace_scopes.for_message(msg, session.metadata)
+        workspace = self._user_workspace_path(msg)
         return self.context.build_messages(
             history=history,
             current_message=msg.content,
@@ -680,7 +681,7 @@ class AgentLoop:
             sender_id=msg.sender_id,
             session_summary=pending_summary,
             session_metadata=session.metadata,
-            workspace=scope.project_path,
+            workspace=workspace,
             runtime_context_blocks=runtime_context_blocks,
             include_memory_recent_history=include_memory_recent_history,
             session_key=session.key,
@@ -689,6 +690,7 @@ class AgentLoop:
 
     def _request_context_for_turn(self, ctx: TurnContext) -> RequestContext:
         scope = self.workspace_scopes.for_message(ctx.msg, ctx.session.metadata)
+        workspace = self._user_workspace_path(ctx.msg)
         return RequestContext(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
@@ -699,7 +701,7 @@ class AgentLoop:
             metadata=dict(ctx.msg.metadata or {}),
             sender_id=ctx.msg.sender_id,
             turn_id=ctx.turn_id,
-            workspace=scope.project_path,
+            workspace=workspace,
         )
 
     async def _resolve_runtime_context_for_turn(
@@ -747,6 +749,21 @@ class AgentLoop:
         if self._unified_session and not msg.session_key_override:
             return UNIFIED_SESSION_KEY
         return msg.session_key
+
+    def _user_workspace_path(self, msg: InboundMessage) -> Path:
+        """Return the per-user workspace path for a message.
+
+        When *msg* carries a ``user_id``, the workspace is scoped to
+        ``<base_workspace>/workspaces/<user_id>/`` so that memory files
+        (SOUL.md, USER.md, MEMORY.md) and session data are isolated per user.
+        Falls back to the base workspace for messages without a user_id.
+        """
+        user_id = msg.user_id
+        if user_id:
+            pw = self.workspace / "workspaces" / user_id
+            pw.mkdir(parents=True, exist_ok=True)
+            return pw
+        return self.workspace
 
     @staticmethod
     def _replay_token_budget(runtime: LLMRuntime) -> int:

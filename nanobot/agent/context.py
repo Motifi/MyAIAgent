@@ -71,6 +71,12 @@ class ContextBuilder:
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         root = workspace or self.workspace
+
+        # Use per-user MemoryStore when workspace differs from the default
+        memory_store = self.memory
+        if workspace is not None and workspace != self.workspace:
+            memory_store = MemoryStore(root)
+
         parts = [self._get_identity(channel=channel, workspace=root)]
 
         bootstrap = self._load_bootstrap_files(root)
@@ -79,8 +85,8 @@ class ContextBuilder:
 
         parts.append(render_template("agent/tool_contract.md"))
 
-        memory = self.memory.get_memory_context()
-        if memory and not self._is_template_content(self.memory.read_memory(), "memory/MEMORY.md"):
+        memory = memory_store.get_memory_context()
+        if memory and not self._is_template_content(memory_store.read_memory(), "memory/MEMORY.md"):
             parts.append(f"# Memory\n\n{memory}")
 
         always_skills = self.skills.get_always_skills()
@@ -94,8 +100,8 @@ class ContextBuilder:
             parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
 
         if include_memory_recent_history:
-            entries = self.memory.read_recent_history_for_prompt(
-                since_cursor=self.memory.get_last_dream_cursor(),
+            entries = memory_store.read_recent_history_for_prompt(
+                since_cursor=memory_store.get_last_dream_cursor(),
                 session_key=session_key,
                 unified_session=unified_session,
             )

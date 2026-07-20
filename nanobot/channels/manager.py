@@ -97,12 +97,14 @@ class ChannelManager:
         webui_static_dist: bool = True,
         webui_runtime_surface: str = "browser",
         webui_runtime_capabilities: dict[str, Any] | None = None,
+        user_store: Any = None,
     ):
         self.config = config
         self.bus = bus
         self._session_manager = session_manager
         self._cron_service = cron_service
         self._local_trigger_store = local_trigger_store
+        self._user_store = user_store
         self._webui_runtime_model_name = webui_runtime_model_name
         self._webui_cron_pending_job_ids = webui_cron_pending_job_ids
         self._webui_local_trigger_pending_ids = webui_local_trigger_pending_ids
@@ -151,6 +153,9 @@ class ChannelManager:
         runtime_name: str | None = None,
     ) -> BaseChannel:
         kwargs: dict[str, Any] = {}
+        if self._user_store is not None:
+            from nanobot.users.identity import IdentityResolver
+            kwargs["identity_resolver"] = IdentityResolver(self._user_store)
         if cls.name == "websocket":
             from nanobot.channels.websocket.runtime import WebSocketConfig
             from nanobot.webui.gateway_services import build_gateway_services

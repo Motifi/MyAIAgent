@@ -32,18 +32,20 @@ class BaseChannel(ABC):
     send_tool_hints: bool = False
     show_reasoning: bool = True
 
-    def __init__(self, config: Any, bus: MessageBus):
+    def __init__(self, config: Any, bus: MessageBus, **kwargs: Any):
         """
         Initialize the channel.
 
         Args:
             config: Channel-specific configuration.
             bus: The message bus for communication.
+            **kwargs: Additional dependencies (identity_resolver, etc.).
         """
         self.config = config
         self.logger = logger.bind(channel=self.name)
         self.bus = bus
         self._running = False
+        self.identity_resolver = kwargs.get("identity_resolver")
 
     async def transcribe_audio(self, file_path: str | Path) -> str:
         """Transcribe an audio file via Whisper (OpenAI or Groq). Returns empty string on failure."""
@@ -261,6 +263,18 @@ class BaseChannel(ABC):
         if self.supports_streaming:
             meta = {**meta, "_wants_stream": True}
 
+        # Resolve platform identity to a nanobot user (multi-user binding).
+        resolved_user_id: str | None = None
+        if self.identity_resolver is not None:
+            try:
+                resolved_user_id = await self.identity_resolver.resolve(
+                    self.name, str(sender_id)
+                )
+            except Exception:
+                resolved_user_id = None
+        if resolved_user_id is not None:
+            meta["_user_id"] = resolved_user_id
+
         msg = InboundMessage(
             channel=self.name,
             sender_id=str(sender_id),
@@ -269,6 +283,7 @@ class BaseChannel(ABC):
             media=media or [],
             metadata=meta,
             session_key_override=session_key,
+            user_id=resolved_user_id,
         )
 
         await self.bus.publish_inbound(msg)

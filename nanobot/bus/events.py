@@ -31,11 +31,20 @@ class InboundMessage:
     media: list[str] = field(default_factory=list)  # Media URLs
     metadata: dict[str, Any] = field(default_factory=dict)  # Channel-specific data
     session_key_override: str | None = None  # Optional override for thread-scoped sessions
+    user_id: str | None = None  # nanobot user ID (multi-user binding)
 
     @property
     def session_key(self) -> str:
-        """Unique key for session identification."""
-        return self.session_key_override or f"{self.channel}:{self.chat_id}"
+        """Unique key for session identification.
+
+        When ``user_id`` is set, the key is scoped to that user:
+        ``user_id:channel:chat_id``.  Falls back to ``channel:chat_id``
+        for backward compatibility.
+        """
+        base = self.session_key_override or f"{self.channel}:{self.chat_id}"
+        if self.user_id:
+            return f"{self.user_id}:{base}"
+        return base
 
 
 @dataclass

@@ -47,6 +47,9 @@ import type {
   SettingsPayload,
   WorkspaceScopePayload,
   WorkspacesPayload,
+  UserInfo,
+  LoginResponse,
+  AuthView,
 } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -55,7 +58,11 @@ import {
   fetchSettings,
   fetchWorkspaces,
   runPairingAction,
+  login as apiLogin,
 } from "@/lib/api";
+import { LoginPage } from "@/pages/LoginPage";
+import { RegisterPage } from "@/pages/RegisterPage";
+import { UsersManagement } from "@/components/settings/UsersManagement";
 import {
   createRuntimeHost,
   toRuntimeSurface,
@@ -66,6 +73,9 @@ type BootState =
   | { status: "loading" }
   | { status: "error"; message: string }
   | { status: "auth"; failed?: boolean }
+  | { status: "login"; failed?: boolean }
+  | { status: "register" }
+  | { status: "pending_approval" }
   | {
       status: "ready";
       client: NanobotClient;
@@ -74,6 +84,7 @@ type BootState =
       modelName: string | null;
       ingressLimits: BootstrapResponse["limits"] | null;
       runtimeSurface: RuntimeSurface;
+      user: import("@/lib/types").UserInfo | null;
     };
 
 const SIDEBAR_STORAGE_KEY = "nanobot-webui.sidebar";
@@ -775,6 +786,65 @@ export default function App() {
     [refreshReadyClient],
   );
 
+  const jwtTokenRef = useRef<string>("");
+  const currentUserRef = useRef<UserInfo | null>(null);
+
+  const handleJwtLogin = useCallback(
+    (loginRes: LoginResponse) => {
+      let cancelled = false;
+      (async () => {
+        setState({ status: "loading" });
+        try {
+          jwtTokenRef.current = loginRes.token;
+          currentUserRef.current = loginRes.user;
+          const boot = await fetchBootstrap("", "", undefined, loginRes.token);
+          if (cancelled) return;
+          const url = deriveWsUrl(boot.ws_path, boot.token, boot.ws_url);
+          const runtimeSurface = toRuntimeSurface(boot.runtime_surface);
+          const runtimeHost = createRuntimeHost(runtimeSurface, boot.runtime_capabilities);
+          const client = new NanobotClient({
+            url,
+            socketFactory: runtimeHost.socketFactory,
+            onReauth: async () => {
+              try {
+                const refreshed = await refreshReadyClient(client, runtimeSurface);
+                return refreshed.url;
+              } catch {
+                return null;
+              }
+            },
+          });
+          bootstrapSecretRef.current = "";
+          client.connect();
+          setState({
+            status: "ready",
+            client,
+            token: boot.api_token,
+            tokenExpiresAt: bootstrapTokenExpiresAt(boot.expires_in),
+            modelName: boot.model_name ?? null,
+            ingressLimits: boot.limits ?? null,
+            runtimeSurface,
+            user: loginRes.user,
+          });
+        } catch (e) {
+          if (cancelled) return;
+          if (isBootstrapAuthRequired(e)) {
+            setState({ status: "login", failed: true });
+          } else {
+            setState({
+              status: "error",
+              message: e instanceof Error ? e.message : String(e),
+            });
+          }
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    },
+    [refreshReadyClient],
+  );
+
   useEffect(() => {
     if (state.status !== "ready") return;
     const client = state.client;
@@ -783,7 +853,7 @@ export default function App() {
         await refreshReadyClient(client, state.runtimeSurface);
       } catch (e) {
         if (isBootstrapAuthRequired(e)) {
-          setState({ status: "auth", failed: !!bootstrapSecretRef.current });
+          setState({ status: "login", failed: !!bootstrapSecretRef.current });
         }
       }
     }, tokenRefreshDelayMs(state.tokenExpiresAt));
@@ -818,6 +888,43 @@ export default function App() {
       />
     );
   }
+  if (state.status === "login") {
+    return (
+      <LoginPage
+        failed={!!state.failed}
+        onLogin={(res: LoginResponse) => handleJwtLogin(res)}
+        onNavigate={(view: AuthView) => setState({ status: view })}
+      />
+    );
+  }
+  if (state.status === "register") {
+    return (
+      <RegisterPage
+        onRegistered={() => setState({ status: "pending_approval" })}
+        onNavigate={(view: AuthView) => setState({ status: view })}
+      />
+    );
+  }
+  if (state.status === "pending_approval") {
+    return (
+      <div className="flex h-full w-full items-center justify-center px-6">
+        <div className="flex max-w-sm flex-col items-center gap-4 text-center">
+          <ShieldCheck className="h-12 w-12 text-muted-foreground" />
+          <p className="text-lg font-semibold">Awaiting Approval</p>
+          <p className="text-sm text-muted-foreground">
+            Your account has been created. An administrator needs to approve it
+            before you can sign in.
+          </p>
+          <button
+            className="text-sm text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            onClick={() => setState({ status: "login" })}
+          >
+            Back to sign in
+          </button>
+        </div>
+      </div>
+    );
+  }
   if (state.status === "error") {
     return (
       <div className="flex h-full w-full items-center justify-center px-4 text-center">
@@ -843,7 +950,9 @@ export default function App() {
       state.client.close();
     }
     clearSavedSecret();
-    setState({ status: "auth" });
+    jwtTokenRef.current = "";
+    currentUserRef.current = null;
+    setState({ status: "login" });
   };
 
   const handleNativeEngineRestart = async (): Promise<string> => {
@@ -877,6 +986,7 @@ export default function App() {
       token={state.token}
       modelName={state.modelName}
       ingressLimits={state.ingressLimits}
+      user={state.user}
     >
       <Shell
         runtimeSurface={state.runtimeSurface}
@@ -935,6 +1045,7 @@ function Shell({
     key: string;
     label: string;
   } | null>(null);
+  const [showUsers, setShowUsers] = useState(false);
   const [pendingProjectRename, setPendingProjectRename] = useState<{
     key: string;
     label: string;
@@ -1849,6 +1960,8 @@ function Shell({
     onOpenApps,
     onOpenAutomations,
     onOpenSkills,
+    onOpenUsers: () => setShowUsers(true),
+    isAdmin,
     onOpenSearch: onOpenSessionSearch,
     activeUtility: view === "apps" || view === "automations" || view === "skills" ? view : null,
     onToggleArchived,
@@ -1878,6 +1991,27 @@ function Shell({
       document.documentElement.classList.remove("native-host");
     };
   }, [showHostChrome]);
+
+  const { user } = useClient();
+  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
+
+  if (showUsers && isAdmin) {
+    return (
+      <ThemeProvider theme={theme}>
+        <div className="flex h-full w-full flex-col">
+          <div className="flex items-center gap-2 border-b px-4 py-2">
+            <Button variant="ghost" size="sm" onClick={() => setShowUsers(false)}>
+              ← Back
+            </Button>
+            <span className="text-sm font-medium">User Management</span>
+          </div>
+          <div className="flex-1 overflow-auto">
+            {user && <UsersManagement token={token} currentUser={user} />}
+          </div>
+        </div>
+      </ThemeProvider>
+    );
+  }
 
   return (
     <ThemeProvider theme={theme}>

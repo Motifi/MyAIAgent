@@ -331,6 +331,48 @@ class GatewayConfig(Base):
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
+class UsersConfig(Base):
+    """Multi-user authentication configuration.
+
+    The initial admin account is created automatically on first startup if the
+    users database is empty. Set ``admin_password`` to avoid a one-time random
+    password printed in the logs.
+
+    The ``super_admin_username`` defines an immutable super-admin account that
+    cannot be demoted or deleted.  It defaults to ``admin_username``.
+    """
+
+    admin_username: str = "admin"
+    admin_password: str | None = Field(default=None, repr=False)
+    super_admin_username: str = "admin"
+    require_admin_approval: bool = True
+    jwt_secret: str | None = Field(default=None, repr=False)
+    jwt_ttl_s: int = Field(default=3600, ge=300, le=86400)
+    db_path: str = Field(default="~/.nanobot/users.db", repr=False)
+
+    @field_validator("admin_username")
+    @classmethod
+    def _validate_admin_username(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("admin_username must not be empty")
+        if len(v) > 64:
+            raise ValueError("admin_username must be at most 64 characters")
+        return v
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def _validate_jwt_secret(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) < 32:
+            raise ValueError("jwt_secret must be at least 32 characters when set")
+        return v
+
+
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""
 
@@ -398,6 +440,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    users: UsersConfig = Field(default_factory=UsersConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     model_presets: dict[str, ModelPresetConfig] = Field(
         default_factory=dict,

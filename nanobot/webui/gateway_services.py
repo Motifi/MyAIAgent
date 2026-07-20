@@ -8,6 +8,9 @@ from typing import Any, Callable
 
 from loguru import logger as default_logger
 
+from nanobot.users.auth import generate_jwt_secret
+from nanobot.users.dependencies import AuthDependency
+from nanobot.users.store import UserStore
 from nanobot.webui.gateway_tokens import GatewayTokenStore
 from nanobot.webui.ingress_policy import DEFAULT_WEBUI_INGRESS_POLICY, WebUIIngressPolicy
 from nanobot.webui.media_gateway import WebUIMediaGateway
@@ -31,6 +34,8 @@ class GatewayServices:
     local_trigger_store: Any | None
     cron_pending_job_ids: Callable[[str], set[str]] | None
     local_trigger_pending_ids: Callable[[str], set[str]] | None
+    user_store: UserStore
+    auth: AuthDependency
 
 
 def build_gateway_services(
@@ -54,6 +59,26 @@ def build_gateway_services(
     logger: Any = default_logger,
 ) -> GatewayServices:
     tokens = GatewayTokenStore()
+
+    # -- multi-user auth ----------------------------------------------------
+    from nanobot.config.loader import load_config as _load_config
+
+    try:
+        _cfg = _load_config()
+        users_config = _cfg.users
+    except Exception:
+        users_config = None
+
+    user_store = UserStore(
+        db_path=getattr(users_config, "db_path", None) or "~/.nanobot/users.db"
+    )
+    jwt_secret = (
+        getattr(users_config, "jwt_secret", None)
+        or generate_jwt_secret()
+    )
+    auth = AuthDependency(user_store=user_store, jwt_secret=jwt_secret)
+
+    # -------------------------------------------------------------------
     ingress = DEFAULT_WEBUI_INGRESS_POLICY
     minimum_frame_bytes = ingress.minimum_full_policy_frame_bytes()
     if config.max_message_bytes < minimum_frame_bytes:
@@ -95,6 +120,8 @@ def build_gateway_services(
         channel_feature_action=channel_feature_action,
         channel_runtime_status=channel_runtime_status,
         log=logger,
+        user_store=user_store,
+        auth=auth,
     )
     return GatewayServices(
         http=http,
@@ -108,4 +135,6 @@ def build_gateway_services(
         local_trigger_store=local_trigger_store,
         cron_pending_job_ids=cron_pending_job_ids,
         local_trigger_pending_ids=local_trigger_pending_ids,
+        user_store=user_store,
+        auth=auth,
     )

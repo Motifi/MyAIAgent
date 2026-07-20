@@ -171,6 +171,8 @@ class GatewayHTTPHandler:
         channel_feature_action: Callable[..., Any] | None = None,
         channel_runtime_status: Callable[[], dict[str, Any]] | None = None,
         log: Any = logger,
+        user_store: Any = None,
+        auth: Any = None,
     ) -> None:
         self.config = config
         self.session_manager = session_manager
@@ -189,6 +191,8 @@ class GatewayHTTPHandler:
         self.local_trigger_pending_ids = local_trigger_pending_ids
         self._log = log
         self._runtime_surface = runtime_surface
+        self.user_store = user_store
+        self.auth = auth
 
         from nanobot.webui.settings_api import runtime_capabilities as _rc
         from nanobot.webui.settings_routes import WebUISettingsRouter
@@ -213,7 +217,267 @@ class GatewayHTTPHandler:
     # -- Token management ---------------------------------------------------
 
     def check_api_token(self, request: WsRequest) -> bool:
+        # Try JWT first (multi-user), then fall back to bootstrap token
+        if self.auth is not None and self.auth.check_jwt_token(request):
+            return True
         return self.tokens.check_api_token(request)
+
+    async def require_jwt_or_bootstrap(self, request: WsRequest) -> bool:
+        """Try JWT auth first, then fall back to the legacy bootstrap token check."""
+        if self.auth is not None:
+            user = await self.auth.require_auth(request)
+            if user is not None:
+                return True
+        return self.tokens.check_api_token(request)
+
+    # -- Auth routes --------------------------------------------------------
+
+    async def _dispatch_auth_routes(
+        self, request: WsRequest, got: str
+    ) -> Any | None:
+        if got == "/api/auth/login":
+            return await self._handle_auth_login(request)
+        if got == "/api/auth/register":
+            return await self._handle_auth_register(request)
+        if got == "/api/auth/refresh":
+            return await self._handle_auth_refresh(request)
+        if got == "/api/auth/me":
+            return await self._handle_auth_me(request)
+        if got == "/api/auth/users":
+            return await self._handle_auth_users(request)
+        if got == "/api/auth/pending-users":
+            return await self._handle_auth_pending_users(request)
+
+        import re as _re
+        m = _re.match(r"^/api/auth/approve/([^/]+)$", got)
+        if m:
+            return await self._handle_auth_approve(request, m.group(1))
+        m = _re.match(r"^/api/auth/reject/([^/]+)$", got)
+        if m:
+            return await self._handle_auth_reject(request, m.group(1))
+        m = _re.match(r"^/api/auth/users/([^/]+)/role$", got)
+        if m:
+            return await self._handle_auth_change_role(request, m.group(1))
+        return None
+
+    async def _handle_auth_login(self, request: WsRequest) -> Any:
+        if self.user_store is None:
+            return _http_error(503, "user store unavailable")
+        body = await self._read_json_body(request)
+        if body is None:
+            return _http_error(400, "JSON body required")
+        username = (body.get("username") or "").strip()
+        password = body.get("password") or ""
+        if not username or not password:
+            return _http_error(400, "username and password required")
+
+        user = await self.user_store.authenticate(username, password)
+        if user is None:
+            return _http_error(401, "invalid credentials or account not active")
+
+        from nanobot.users.auth import create_jwt as _create_jwt
+
+        secret = self.auth.jwt_secret if self.auth else "fallback"
+        ttl = 3600
+        try:
+            from nanobot.config.loader import load_config
+            ttl = load_config().users.jwt_ttl_s
+        except Exception:
+            pass
+
+        token = _create_jwt(user["id"], user["role"], secret, ttl)
+        return _http_json_response({
+            "token": token,
+            "user": {
+                "id": user["id"],
+                "username": user["username"],
+                "display_name": user["display_name"],
+                "role": user["role"],
+                "status": user["status"],
+            },
+            "expires_in": ttl,
+        })
+
+    async def _handle_auth_register(self, request: WsRequest) -> Any:
+        if self.user_store is None:
+            return _http_error(503, "user store unavailable")
+        body = await self._read_json_body(request)
+        if body is None:
+            return _http_error(400, "JSON body required")
+        username = (body.get("username") or "").strip()
+        password = body.get("password") or ""
+        display_name = (body.get("display_name") or username).strip()
+        if not username or not password:
+            return _http_error(400, "username and password required")
+        if len(password) < 6:
+            return _http_error(400, "password must be at least 6 characters")
+        # Validate username format: 2-32 chars, letters/digits/underscore, must start with letter
+        import re as _re
+        if not _re.match(r"^[a-zA-Z][a-zA-Z0-9_]{1,31}$", username):
+            return _http_error(
+                400,
+                "用户名只能包含英文字母、数字和下划线，且必须以字母开头（2-32位）",
+            )
+
+        # Check for duplicate
+        existing = await self.user_store.get_user_by_username(username)
+        if existing is not None:
+            return _http_error(409, "username already taken")
+
+        require_approval = True
+        try:
+            from nanobot.config.loader import load_config
+            require_approval = load_config().users.require_admin_approval
+        except Exception:
+            pass
+
+        user = await self.user_store.create_user(
+            username,
+            password,
+            display_name=display_name,
+            require_admin_approval=require_approval,
+        )
+        return _http_json_response({
+            "user": {
+                "id": user["id"],
+                "username": user["username"],
+                "display_name": user["display_name"],
+                "role": user["role"],
+                "status": user["status"],
+            },
+            "message": (
+                "Registration submitted — awaiting admin approval."
+                if user["status"] == "pending"
+                else "Registration complete."
+            ),
+        }, status=201)
+
+    async def _handle_auth_refresh(self, request: WsRequest) -> Any:
+        if self.auth is None:
+            return _http_error(503, "auth unavailable")
+        user = await self.auth.require_auth(request)
+        if user is None:
+            return _http_error(401, "Unauthorized")
+
+        from nanobot.users.auth import create_jwt as _create_jwt
+
+        ttl = 3600
+        try:
+            from nanobot.config.loader import load_config
+            ttl = load_config().users.jwt_ttl_s
+        except Exception:
+            pass
+
+        token = _create_jwt(user["id"], user["role"], self.auth.jwt_secret, ttl)
+        return _http_json_response({"token": token, "expires_in": ttl})
+
+    async def _handle_auth_me(self, request: WsRequest) -> Any:
+        if self.auth is None:
+            return _http_error(503, "auth unavailable")
+        user = await self.auth.require_auth(request)
+        if user is None:
+            return _http_error(401, "Unauthorized")
+        return _http_json_response({
+            "user": {
+                "id": user["id"],
+                "username": user["username"],
+                "display_name": user["display_name"],
+                "role": user["role"],
+                "status": user["status"],
+            },
+        })
+
+    async def _handle_auth_users(self, request: WsRequest) -> Any:
+        if self.auth is None:
+            return _http_error(503, "auth unavailable")
+        admin = await self.auth.require_admin(request)
+        if admin is None:
+            return _http_error(403, "admin required")
+        users = await self.user_store.list_users()
+        safe = [
+            {
+                "id": u["id"],
+                "username": u["username"],
+                "display_name": u["display_name"],
+                "role": u["role"],
+                "status": u["status"],
+                "created_at": u["created_at"],
+            }
+            for u in users
+        ]
+        return _http_json_response({"users": safe})
+
+    async def _handle_auth_pending_users(self, request: WsRequest) -> Any:
+        if self.auth is None:
+            return _http_error(503, "auth unavailable")
+        admin = await self.auth.require_admin(request)
+        if admin is None:
+            return _http_error(403, "admin required")
+        users = await self.user_store.list_users(status="pending")
+        safe = [
+            {
+                "id": u["id"],
+                "username": u["username"],
+                "display_name": u["display_name"],
+                "role": u["role"],
+                "status": u["status"],
+                "created_at": u["created_at"],
+            }
+            for u in users
+        ]
+        return _http_json_response({"users": safe})
+
+    async def _handle_auth_approve(self, request: WsRequest, user_id: str) -> Any:
+        if self.auth is None:
+            return _http_error(503, "auth unavailable")
+        admin = await self.auth.require_admin(request)
+        if admin is None:
+            return _http_error(403, "admin required")
+        ok = await self.user_store.set_status(user_id, "active")
+        if not ok:
+            return _http_error(404, "user not found")
+        return _http_json_response({"status": "ok"})
+
+    async def _handle_auth_reject(self, request: WsRequest, user_id: str) -> Any:
+        if self.auth is None:
+            return _http_error(503, "auth unavailable")
+        admin = await self.auth.require_admin(request)
+        if admin is None:
+            return _http_error(403, "admin required")
+        ok = await self.user_store.delete_user(user_id)
+        if not ok:
+            return _http_error(404, "user not found or cannot be deleted")
+        return _http_json_response({"status": "ok"})
+
+    async def _handle_auth_change_role(self, request: WsRequest, user_id: str) -> Any:
+        if self.auth is None:
+            return _http_error(503, "auth unavailable")
+        super_admin = await self.auth.require_super_admin(request)
+        if super_admin is None:
+            return _http_error(403, "super_admin required")
+        body = await self._read_json_body(request)
+        if body is None:
+            return _http_error(400, "JSON body required")
+        new_role = (body.get("role") or "").strip()
+        if new_role not in ("admin", "user"):
+            return _http_error(400, "role must be 'admin' or 'user'")
+        ok = await self.user_store.change_role(user_id, new_role)
+        if not ok:
+            return _http_error(400, "cannot change role")
+        return _http_json_response({"status": "ok"})
+
+    async def _read_json_body(self, request: WsRequest) -> dict | None:
+        """Read and parse a JSON body from an HTTP request."""
+        try:
+            body = getattr(request, "body", None)
+            if body is None:
+                return None
+            if isinstance(body, bytes):
+                import json as _json
+                return _json.loads(body.decode("utf-8"))
+            return body if isinstance(body, dict) else None
+        except Exception:
+            return None
 
     # -- Main dispatch ------------------------------------------------------
 
@@ -244,6 +508,11 @@ class GatewayHTTPHandler:
         # Bootstrap
         if got == "/webui/bootstrap":
             return self._handle_bootstrap(connection, request)
+
+        # Auth routes (multi-user)
+        response = await self._dispatch_auth_routes(request, got)
+        if response is not None:
+            return response
 
         # Settings routes (delegated)
         response = await self.settings_routes.dispatch(connection, request, got)
@@ -322,13 +591,21 @@ class GatewayHTTPHandler:
     def _handle_bootstrap(self, connection: Any, request: Any) -> Response:
         secret = self.config.token_issue_secret.strip() or self.config.token.strip()
         is_local_browser = _is_local_browser_request(connection, request.headers)
-        if secret:
-            if not _issue_route_secret_matches(request.headers, secret):
-                return _http_error(401, "Unauthorized")
-        elif not is_local_browser:
-            return _http_error(403, "bootstrap is localhost-only")
 
-        api_token_allowed = bool(secret) or is_local_browser
+        # Try JWT auth first (multi-user).  If the request carries a valid JWT,
+        # allow bootstrap without the shared secret — the JWT identifies the user.
+        jwt_authenticated = False
+        if self.auth is not None and self.auth.check_jwt_token(request):
+            jwt_authenticated = True
+
+        if not jwt_authenticated:
+            if secret:
+                if not _issue_route_secret_matches(request.headers, secret):
+                    return _http_error(401, "Unauthorized")
+            elif not is_local_browser:
+                return _http_error(403, "bootstrap is localhost-only")
+
+        api_token_allowed = jwt_authenticated or bool(secret) or is_local_browser
         if not self.tokens.can_issue(include_api_token=api_token_allowed):
             return _http_response(
                 json.dumps({"error": "too many outstanding tokens"}).encode("utf-8"),
@@ -398,7 +675,7 @@ class GatewayHTTPHandler:
         return None
 
     async def _handle_sessions_list(self, request: WsRequest) -> Response:
-        if not self.check_api_token(request):
+        if not await self.require_jwt_or_bootstrap(request):
             return _http_error(401, "Unauthorized")
         if self.session_manager is None:
             return _http_error(503, "session manager unavailable")
